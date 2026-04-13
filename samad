@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+import sys
+import os
+import subprocess
+import stat
+
+
+def help_text():
+    print("""
+==================================================
+SAMAD — because memorizing chmod 777 was not part of the OS syllabus.
+==================================================
+
+DESCRIPTION:
+  SAMAD converts human sentences into Linux commands
+  like chmod, chown, chgrp in a readable way.
+
+--------------------------------------------------
+
+USAGE:
+
+  PERMISSIONS:
+    samad give/remove/set <target> permission to <perm> <file/folder> [options]
+
+  OWNER:
+    samad change owner to <user> <file/folder> [options]
+
+  GROUP:
+    samad change group to <group> <file/folder> [options]
+
+  SHOW:
+    samad show <file/folder>
+
+--------------------------------------------------
+
+TARGETS:
+  user, group, others, everyone, all
+
+PERMISSIONS:
+  read, write, execute
+
+--------------------------------------------------
+
+OPTIONS:
+  -execute      Actually run the command (default: preview only)
+  -recursive    Apply changes to all files/folders inside (-R)
+
+--------------------------------------------------
+
+EXAMPLES:
+
+  samad give user permission to read,write file.txt
+  samad give user,group permission to execute folder -recursive
+  samad remove group permission to write file.sh -execute
+  samad change owner to alice myfolder -recursive
+  samad show file.txt
+
+==================================================
+""")
+    sys.exit()
+
+
+# ---------------- MAPPERS ----------------
+def map_action(word):
+    return {"give": "+", "remove": "-", "set": "="}.get(word)
+
+
+def map_target(word):
+    return {
+        "user": "u",
+        "group": "g",
+        "others": "o",
+        "everyone": "a",
+        "all": "a"
+    }.get(word)
+
+
+def map_perm(word):
+    return {
+        "read": "r",
+        "write": "w",
+        "execute": "x"
+    }.get(word)
+
+
+# ---------------- RUN ----------------
+def run(cmd, execute):
+    if execute:
+        print(f"RUN: {cmd}")
+        subprocess.run(cmd, shell=True)
+    else:
+        print(cmd)
+
+
+# ---------------- FILE DETECTION ----------------
+def detect_file(block):
+    words = [w.strip().strip(",") for w in block.split()]
+
+    skip = {
+        "give","remove","set","permission","to","and",
+        "user","group","others","everyone","all",
+        "read","write","execute"
+    }
+
+    for w in reversed(words):
+        if w not in skip:
+            return w
+
+    return None
+
+
+def parse_block(block):
+    block = block.replace("permission", " ")
+    block = block.replace("to", " ")
+    block = block.replace(",", " , ")
+
+    parts = block.split()
+
+    if len(parts) < 3:
+        return None, None, None
+
+    action = map_action(parts[0])
+
+    targets = []
+    perms = []
+
+    i = 1
+
+    # targets
+    while i < len(parts) and parts[i] not in ["read", "write", "execute"]:
+        if parts[i] != ",":
+            t = map_target(parts[i])
+            if t:
+                targets.append(t)
+        i += 1
+
+    # permissions
+    while i < len(parts):
+        if parts[i] != ",":
+            p = map_perm(parts[i])
+            if p:
+                perms.append(p)
+        i += 1
+
+    perm_str = "".join(sorted(set(perms), key=lambda x: "rwx".index(x)))
+
+    return action, targets, perm_str
+
+
+def main():
+    args = sys.argv[1:]
+
+    if not args or args[0] in ["-h", "--help", "help"]:
+        help_text()
+
+    execute = "-execute" in args
+    recursive = "-recursive" in args
+
+    args = [a for a in args if a not in ["-execute", "-recursive"]]
+
+    if args[0] == "show":
+        file = args[1]
+
+        if not os.path.exists(file):
+            print("File not found")
+            return
+
+        st = os.stat(file)
+        perm = stat.filemode(st.st_mode)
+
+        print(f"\nFile: {file}")
+        print(f"Permissions: {perm}")
+
+        u, g, o = perm[1:4], perm[4:7], perm[7:10]
+
+        def explain(p):
+            return (
+                ("read " if "r" in p else "") +
+                ("write " if "w" in p else "") +
+                ("execute" if "x" in p else "")
+            ).strip()
+
+        print("\nExplanation:")
+        print(f"User  : {u} → {explain(u)}")
+        print(f"Group : {g} → {explain(g)}")
+        print(f"Others: {o} → {explain(o)}")
+
+        return
+
+    # ---------------- OWNER ----------------
+    if args[0] == "change" and args[1] == "owner":
+        user = args[3]
+        file = args[4]
+        cmd = f"chown {'-R' if recursive else ''} {user} {file}"
+        run(cmd, execute)
+        return
+
+    # ---------------- GROUP ----------------
+    if args[0] == "change" and args[1] == "group":
+        group = args[3]
+        file = args[4]
+        cmd = f"chgrp {'-R' if recursive else ''} {group} {file}"
+        run(cmd, execute)
+        return
+
+    # ---------------- PERMISSIONS ----------------
+    sentence = " ".join(args)
+    blocks = [b.strip() for b in sentence.split(" and ") if b.strip()]
+
+    results = []
+    file_path = None
+
+    for block in blocks:
+        action, targets, perm = parse_block(block)
+
+        if not action or not targets or not perm:
+            print("Invalid input. Use -h")
+            return
+
+        file = detect_file(block)
+        if file:
+            file_path = file
+
+        for t in targets:
+            results.append(f"{t}{action}{perm}")
+
+    if not file_path:
+        print("Could not detect file/folder. Use -h")
+        return
+
+    cmd = f"chmod {'-R' if recursive else ''} {','.join(results)} {file_path}"
+    run(cmd, execute)
+
+
+if __name__ == "__main__":
+    main()
